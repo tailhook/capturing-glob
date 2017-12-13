@@ -55,10 +55,8 @@
 //! }
 //! ```
 
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "https://www.rust-lang.org/favicon.ico",
-       html_root_url = "https://doc.rust-lang.org/glob/")]
 #![deny(missing_docs)]
+#![deny(missing_debug_implementations)]
 #![cfg_attr(all(test, windows), feature(std_misc))]
 
 use std::ascii::AsciiExt;
@@ -84,6 +82,7 @@ use MatchResult::{Match, SubPatternDoesntMatch, EntirePatternDoesntMatch};
 /// `GlobError` is returned to express this.
 ///
 /// See the `glob` function for more details.
+#[derive(Debug)]
 pub struct Paths {
     dir_patterns: Vec<Pattern>,
     require_dir: bool,
@@ -938,7 +937,7 @@ fn chars_eq(a: char, b: char, case_sensitive: bool) -> bool {
 
 /// Configuration options to modify the behaviour of `Pattern::matches_with(..)`.
 #[allow(missing_copy_implementations)]
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Debug)]
 pub struct MatchOptions {
     /// Whether or not patterns should be matched in a case-sensitive manner.
     /// This currently only considers upper/lower case relationships between
