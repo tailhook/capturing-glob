@@ -12,7 +12,7 @@
 
 #![cfg_attr(test, deny(warnings))]
 
-extern crate glob;
+extern crate capturing_glob as glob;
 extern crate tempdir;
 
 use glob::glob;
