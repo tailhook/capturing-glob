@@ -1,2 +1,5 @@
 /target
+/.vagga
 /Cargo.lock
+/tmp
+
