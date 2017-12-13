@@ -10,7 +10,7 @@ capture groups when matching (similarly to captures in regexes).
 
 
 ## Usage
-```
+
 And add this to your crate root:
 
 ```rust
@@ -38,7 +38,8 @@ more importantly you can use user-defined globs like these:
 
 * ``(*)/package.json``
 * ``tests/(*).spec.js``
-* ``docs/config-(*).rst``
+* ``docs/(section-*).rst``
+* ``/usr/share/zoneinfo/(*/*)``
 
 
 License
