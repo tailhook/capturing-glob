@@ -59,6 +59,10 @@
 #![deny(missing_debug_implementations)]
 #![cfg_attr(all(test, windows), feature(std_misc))]
 
+mod entry;
+
+pub use entry::Entry;
+
 use std::ascii::AsciiExt;
 use std::cmp;
 use std::fmt;
@@ -306,7 +310,7 @@ fn is_dir(p: &Path) -> bool {
 ///
 /// This represents either a matched path or a glob iteration error,
 /// such as failing to read a particular directory's contents.
-pub type GlobResult = Result<PathBuf, GlobError>;
+pub type GlobResult = Result<Entry, GlobError>;
 
 impl Iterator for Paths {
     type Item = GlobResult;
@@ -345,7 +349,7 @@ impl Iterator for Paths {
                 if self.require_dir && !is_dir(&path) {
                     continue;
                 }
-                return Some(Ok(path));
+                return Some(Ok(Entry::new(path)));
             }
 
             if self.dir_patterns[idx].is_recursive {
@@ -370,7 +374,7 @@ impl Iterator for Paths {
                     if next == self.dir_patterns.len() - 1 {
                         // pattern ends in recursive pattern, so return this
                         // directory as a result
-                        return Some(Ok(path));
+                        return Some(Ok(Entry::new(path)));
                     } else {
                         // advanced to the next pattern for this path
                         idx = next + 1;
@@ -401,7 +405,7 @@ impl Iterator for Paths {
                     // children
 
                     if !self.require_dir || is_dir(&path) {
-                        return Some(Ok(path));
+                        return Some(Ok(Entry::new(path)));
                     }
                 } else {
                     fill_todo(&mut self.todo, &self.dir_patterns,
