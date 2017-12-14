@@ -72,8 +72,6 @@ use std::path::{self, Path, PathBuf, Component};
 use std::str::FromStr;
 use std::error::Error;
 
-use PatternToken::{Char, AnyChar, AnySequence, AnyRecursiveSequence, AnyWithin};
-use PatternToken::AnyExcept;
 use CharSpecifier::{SingleChar, CharRange};
 use MatchResult::{Match, SubPatternDoesntMatch, EntirePatternDoesntMatch};
 
@@ -498,6 +496,8 @@ enum PatternToken {
     AnyRecursiveSequence,
     AnyWithin(Vec<CharSpecifier>),
     AnyExcept(Vec<CharSpecifier>),
+    StartCapture(usize),
+    EndCapture(usize),
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -513,6 +513,13 @@ enum MatchResult {
     EntirePatternDoesntMatch,
 }
 
+#[derive(Clone, PartialEq)]
+enum CaptureResult {
+    Match(()),
+    SubPatternDoesntMatch,
+    EntirePatternDoesntMatch,
+}
+
 const ERROR_WILDCARDS: &'static str = "wildcards are either regular `*` or recursive `**`";
 const ERROR_RECURSIVE_WILDCARDS: &'static str = "recursive wildcards must form a single path \
                                                  component";
@@ -523,6 +530,7 @@ impl Pattern {
     ///
     /// An invalid glob pattern will yield a `PatternError`.
     pub fn new(pattern: &str) -> Result<Pattern, PatternError> {
+        use self::PatternToken::*;
 
         let chars = pattern.chars().collect::<Vec<_>>();
         let mut tokens = Vec::new();
@@ -699,12 +707,25 @@ impl Pattern {
         &self.original
     }
 
+    /// Return entry if filename matches pattern
+    pub fn captures_with(&self, str: &str, options: &MatchOptions)
+        -> Option<Entry>
+    {
+        use self::CaptureResult::Match;
+        match self.captures_from(true, str.char_indices(), 0, options) {
+            Match(capt) => unimplemented!(),
+            _ => None,
+        }
+    }
+
     fn matches_from(&self,
                     mut follows_separator: bool,
                     mut file: std::str::Chars,
                     i: usize,
                     options: &MatchOptions)
-                    -> MatchResult {
+                    -> MatchResult
+    {
+        use self::PatternToken::*;
 
         for (ti, token) in self.tokens[i..].iter().enumerate() {
             match *token {
@@ -759,6 +780,7 @@ impl Pattern {
                         AnyExcept(ref specifiers) => !in_char_specifiers(&specifiers, c, options),
                         Char(c2) => chars_eq(c, c2, options.case_sensitive),
                         AnySequence | AnyRecursiveSequence => unreachable!(),
+                        StartCapture(_) | EndCapture(_) => true,
                     } {
                         return SubPatternDoesntMatch;
                     }
@@ -770,6 +792,87 @@ impl Pattern {
         // Iter is fused.
         if file.next().is_none() {
             Match
+        } else {
+            SubPatternDoesntMatch
+        }
+    }
+
+    fn captures_from(&self,
+                    mut follows_separator: bool,
+                    mut file: std::str::CharIndices,
+                    i: usize,
+                    options: &MatchOptions)
+                    -> CaptureResult
+    {
+        use self::PatternToken::*;
+        use self::CaptureResult::*;
+
+        for (ti, token) in self.tokens[i..].iter().enumerate() {
+            match *token {
+                AnySequence | AnyRecursiveSequence => {
+                    // ** must be at the start.
+                    debug_assert!(match *token {
+                        AnyRecursiveSequence => follows_separator,
+                        _ => true,
+                    });
+
+                    // Empty match
+                    match self.captures_from(follows_separator, file.clone(), i + ti + 1, options) {
+                        SubPatternDoesntMatch => (), // keep trying
+                        m => return m,
+                    };
+
+                    while let Some((i, c)) = file.next() {
+                        if follows_separator && options.require_literal_leading_dot && c == '.' {
+                            return SubPatternDoesntMatch;
+                        }
+                        follows_separator = path::is_separator(c);
+                        match *token {
+                            AnyRecursiveSequence if !follows_separator => continue,
+                            AnySequence if options.require_literal_separator &&
+                                           follows_separator => return SubPatternDoesntMatch,
+                            _ => (),
+                        }
+                        match self.captures_from(follows_separator,
+                                                file.clone(),
+                                                i + ti + 1,
+                                                options) {
+                            SubPatternDoesntMatch => (), // keep trying
+                            m => return m,
+                        }
+                    }
+                }
+                _ => {
+                    let (i, c) = match file.next() {
+                        Some(pair) => pair,
+                        None => return EntirePatternDoesntMatch,
+                    };
+
+                    let is_sep = path::is_separator(c);
+
+                    if !match *token {
+                        AnyChar | AnyWithin(..) | AnyExcept(..)
+                            if (options.require_literal_separator && is_sep) ||
+                            (follows_separator && options.require_literal_leading_dot &&
+                             c == '.') => false,
+                        AnyChar => true,
+                        AnyWithin(ref specifiers) => in_char_specifiers(&specifiers, c, options),
+                        AnyExcept(ref specifiers) => !in_char_specifiers(&specifiers, c, options),
+                        Char(c2) => chars_eq(c, c2, options.case_sensitive),
+                        AnySequence | AnyRecursiveSequence => unreachable!(),
+                        StartCapture(_) => unimplemented!(),
+                        EndCapture(_) => unimplemented!(),
+                    } {
+                        return SubPatternDoesntMatch;
+                    }
+                    follows_separator = is_sep;
+                }
+            }
+        }
+
+        // Iter is fused.
+        if file.next().is_none() {
+            Match(())
         } else {
             SubPatternDoesntMatch
         }
@@ -789,7 +892,7 @@ fn fill_todo(todo: &mut Vec<Result<(PathBuf, usize), GlobError>>,
         let mut s = String::new();
         for token in pattern.tokens.iter() {
             match *token {
-                Char(c) => s.push(c),
+                PatternToken::Char(c) => s.push(c),
                 _ => return None,
             }
         }
@@ -850,7 +953,7 @@ fn fill_todo(todo: &mut Vec<Result<(PathBuf, usize), GlobError>>,
                     // requires that the pattern has a leading dot, even if the
                     // `MatchOptions` field `require_literal_leading_dot` is not
                     // set.
-                    if pattern.tokens.len() > 0 && pattern.tokens[0] == Char('.') {
+                    if pattern.tokens.len() > 0 && pattern.tokens[0] == PatternToken::Char('.') {
                         for &special in [".", ".."].iter() {
                             if pattern.matches_with(special, options) {
                                 add(todo, path.join(special));
