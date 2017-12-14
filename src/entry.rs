@@ -21,13 +21,18 @@ impl Entry {
         &self.path
     }
     /// Get capture group number `n`
+    ///
+    /// The `n` is 1-based as in regexes (group 0 is the whole path)
     #[cfg(windows)]
     pub fn group(&self, n: usize) -> Option<&OsStr> {
         self.group_windows(n)
     }
     #[cfg_attr(not(windows), allow(dead_code))]
     fn group_windows(&self, n: usize) -> Option<&OsStr> {
-        if let Some(&(a, b)) = self.groups.get(n) {
+        if n == 0 {
+            return Some(self.path.as_os_str());
+        }
+        if let Some(&(a, b)) = self.groups.get(n-1) {
             let bytes = self.path.to_str().unwrap().as_bytes();
             Some(Path::new(from_utf8(&bytes[a..b]).unwrap()).as_os_str())
         } else {
@@ -35,10 +40,15 @@ impl Entry {
         }
     }
     /// Get capture group number `n`
+    ///
+    /// The `n` is 1-based as in regexes (group 0 is the whole path)
     #[cfg(unix)]
     pub fn group(&self, n: usize) -> Option<&OsStr> {
         use std::os::unix::ffi::OsStrExt;
-        if let Some(&(a, b)) = self.groups.get(n) {
+        if n == 0 {
+            return Some(self.path.as_os_str());
+        }
+        if let Some(&(a, b)) = self.groups.get(n-1) {
             let bytes = self.path.as_os_str().as_bytes();
             Some(OsStr::from_bytes(&bytes[a..b]))
         } else {
