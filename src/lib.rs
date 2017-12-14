@@ -77,8 +77,9 @@ use PatternToken::AnyExcept;
 use CharSpecifier::{SingleChar, CharRange};
 use MatchResult::{Match, SubPatternDoesntMatch, EntirePatternDoesntMatch};
 
-/// An iterator that yields `Path`s from the filesystem that match a particular
-/// pattern.
+/// An iterator that yields Entry'ies that match a particular pattern.
+///
+/// Each entry conains matching filename and also capture groups.
 ///
 /// Note that it yields `GlobResult` in order to report any `IoErrors` that may
 /// arise during iteration. If a directory matches but is unreadable,
@@ -87,7 +88,7 @@ use MatchResult::{Match, SubPatternDoesntMatch, EntirePatternDoesntMatch};
 ///
 /// See the `glob` function for more details.
 #[derive(Debug)]
-pub struct Paths {
+pub struct Entries {
     dir_patterns: Vec<Pattern>,
     require_dir: bool,
     options: MatchOptions,
@@ -112,7 +113,7 @@ pub struct Paths {
 /// the path (partially) matched _but_ its contents could not be read in order
 /// to determine if its contents matched.
 ///
-/// See the `Paths` documentation for more information.
+/// See the `Entries` documentation for more information.
 ///
 /// # Examples
 ///
@@ -151,8 +152,8 @@ pub struct Paths {
 ///     println!("{}", entry.path().display());
 /// }
 /// ```
-/// Paths are yielded in alphabetical order.
-pub fn glob(pattern: &str) -> Result<Paths, PatternError> {
+/// Entries are yielded in alphabetical order.
+pub fn glob(pattern: &str) -> Result<Entries, PatternError> {
     glob_with(pattern, &MatchOptions::new())
 }
 
@@ -168,9 +169,9 @@ pub fn glob(pattern: &str) -> Result<Paths, PatternError> {
 /// `require_literal_separator` is always set to `true` regardless of the value
 /// passed to this function.
 ///
-/// Paths are yielded in alphabetical order.
+/// Entries are yielded in alphabetical order.
 pub fn glob_with(pattern: &str, options: &MatchOptions)
-                 -> Result<Paths, PatternError> {
+                 -> Result<Entries, PatternError> {
     // make sure that the pattern is valid first, else early return with error
     let _compiled = try!(Pattern::new(pattern));
 
@@ -220,7 +221,7 @@ pub fn glob_with(pattern: &str, options: &MatchOptions)
         // FIXME: How do we want to handle verbatim paths? I'm inclined to
         // return nothing, since we can't very well find all UNC shares with a
         // 1-letter server name.
-        return Ok(Paths {
+        return Ok(Entries {
             dir_patterns: Vec::new(),
             require_dir: false,
             options: options.clone(),
@@ -252,7 +253,7 @@ pub fn glob_with(pattern: &str, options: &MatchOptions)
     let require_dir = last_is_separator == Some(true);
     let todo = Vec::new();
 
-    Ok(Paths {
+    Ok(Entries {
         dir_patterns: dir_patterns,
         require_dir: require_dir,
         options: options.clone(),
@@ -312,7 +313,7 @@ fn is_dir(p: &Path) -> bool {
 /// such as failing to read a particular directory's contents.
 pub type GlobResult = Result<Entry, GlobError>;
 
-impl Iterator for Paths {
+impl Iterator for Entries {
     type Item = GlobResult;
 
     fn next(&mut self) -> Option<GlobResult> {
