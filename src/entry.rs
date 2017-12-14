@@ -25,7 +25,7 @@ impl Entry {
     pub fn group(&self, n: usize) -> Option<&OsStr> {
         self.group_windows(n)
     }
-    #[cfg_attr(windows, allow(dead_code))]
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn group_windows(&self, n: usize) -> Option<&OsStr> {
         if let Some(&(a, b)) = self.groups.get(n) {
             let bytes = self.path.to_str().unwrap().as_bytes();
@@ -36,7 +36,7 @@ impl Entry {
     }
     /// Get capture group number `n`
     #[cfg(unix)]
-    fn group(&self, n: usize) -> Option<&OsStr> {
+    pub fn group(&self, n: usize) -> Option<&OsStr> {
         use std::os::unix::ffi::OsStrExt;
         if let Some(&(a, b)) = self.groups.get(n) {
             let bytes = self.path.as_os_str().as_bytes();

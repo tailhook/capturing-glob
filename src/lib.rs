@@ -25,11 +25,11 @@
 //! To print all jpg files in `/media/` and all of its subdirectories.
 //!
 //! ```rust,no_run
-//! use glob::glob;
+//! use capturing_glob::glob;
 //!
 //! for entry in glob("/media/**/*.jpg").expect("Failed to read glob pattern") {
 //!     match entry {
-//!         Ok(path) => println!("{:?}", path.display()),
+//!         Ok(entry) => println!("{:?}", entry.path().display()),
 //!         Err(e) => println!("{:?}", e),
 //!     }
 //! }
@@ -40,8 +40,8 @@
 //! instead of printing them.
 //!
 //! ```rust,no_run
-//! use glob::glob_with;
-//! use glob::MatchOptions;
+//! use capturing_glob::glob_with;
+//! use capturing_glob::MatchOptions;
 //!
 //! let options = MatchOptions {
 //!     case_sensitive: false,
@@ -49,8 +49,8 @@
 //!     require_literal_leading_dot: false,
 //! };
 //! for entry in glob_with("local/*a*", &options).unwrap() {
-//!     if let Ok(path) = entry {
-//!         println!("{:?}", path.display())
+//!     if let Ok(entry) = entry {
+//!         println!("{:?}", entry.path().display())
 //!     }
 //! }
 //! ```
@@ -120,11 +120,11 @@ pub struct Paths {
 /// `kittens.jpg`, `puppies.jpg` and `hamsters.gif`:
 ///
 /// ```rust,no_run
-/// use glob::glob;
+/// use capturing_glob::glob;
 ///
 /// for entry in glob("/media/pictures/*.jpg").unwrap() {
 ///     match entry {
-///         Ok(path) => println!("{:?}", path.display()),
+///         Ok(entry) => println!("{:?}", entry.path().display()),
 ///
 ///         // if the path matched but was unreadable,
 ///         // thereby preventing its contents from matching
@@ -144,11 +144,11 @@ pub struct Paths {
 /// `filter_map`:
 ///
 /// ```rust
-/// use glob::glob;
+/// use capturing_glob::glob;
 /// use std::result::Result;
 ///
-/// for path in glob("/media/pictures/*.jpg").unwrap().filter_map(Result::ok) {
-///     println!("{}", path.display());
+/// for entry in glob("/media/pictures/*.jpg").unwrap().filter_map(Result::ok) {
+///     println!("{}", entry.path().display());
 /// }
 /// ```
 /// Paths are yielded in alphabetical order.
@@ -663,7 +663,7 @@ impl Pattern {
     /// # Examples
     ///
     /// ```rust
-    /// use glob::Pattern;
+    /// use capturing_glob::Pattern;
     ///
     /// assert!(Pattern::new("c?t").unwrap().matches("cat"));
     /// assert!(Pattern::new("k[!e]tteh").unwrap().matches("kitteh"));
