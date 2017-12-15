@@ -87,6 +87,7 @@ use MatchResult::{Match, SubPatternDoesntMatch, EntirePatternDoesntMatch};
 /// See the `glob` function for more details.
 #[derive(Debug)]
 pub struct Entries {
+    whole_pattern: Pattern,
     dir_patterns: Vec<Pattern>,
     require_dir: bool,
     options: MatchOptions,
@@ -170,8 +171,25 @@ pub fn glob(pattern: &str) -> Result<Entries, PatternError> {
 /// Entries are yielded in alphabetical order.
 pub fn glob_with(pattern: &str, options: &MatchOptions)
                  -> Result<Entries, PatternError> {
-    // make sure that the pattern is valid first, else early return with error
-    let _compiled = try!(Pattern::new(pattern));
+    let last_is_separator = pattern.chars().next_back().map(path::is_separator);
+    let require_dir = last_is_separator == Some(true);
+
+    let mut txt = pattern;
+    if require_dir {
+        // Need to strip last slash.
+        // I.e. pattern `*/` means we match a directory,
+        // but the real path of a directory is `something` (without slash)
+        txt = &txt[..pattern.len()-1];
+    };
+    if txt.starts_with(".") &&
+        txt[1..].chars().next().map(path::is_separator) == Some(true)
+    {
+        // Similarly a pattern `./*` means we match at current path
+        // but the real path is `something` without dotslash
+        txt = &txt[2..];
+    }
+    // TODO(tailhook) This may mess up error offsets
+    let compiled = Pattern::new(txt)?;
 
     #[cfg(windows)]
     fn check_windows_verbatim(p: &Path) -> bool {
@@ -221,6 +239,7 @@ pub fn glob_with(pattern: &str, options: &MatchOptions)
         // 1-letter server name.
         return Ok(Entries {
             dir_patterns: Vec::new(),
+            whole_pattern: compiled,
             require_dir: false,
             options: options.clone(),
             todo: Vec::new(),
@@ -235,7 +254,7 @@ pub fn glob_with(pattern: &str, options: &MatchOptions)
                          .split_terminator(path::is_separator);
 
     for component in components {
-        let compiled = try!(Pattern::new(component));
+        let compiled = Pattern::new_options(component, true)?;
         dir_patterns.push(compiled);
     }
 
@@ -247,12 +266,11 @@ pub fn glob_with(pattern: &str, options: &MatchOptions)
         });
     }
 
-    let last_is_separator = pattern.chars().next_back().map(path::is_separator);
-    let require_dir = last_is_separator == Some(true);
     let todo = Vec::new();
 
     Ok(Entries {
         dir_patterns: dir_patterns,
+        whole_pattern: compiled,
         require_dir: require_dir,
         options: options.clone(),
         todo: todo,
@@ -404,7 +422,10 @@ impl Iterator for Entries {
                     // children
 
                     if !self.require_dir || is_dir(&path) {
-                        return Some(Ok(Entry::new(path)));
+                        let entry = self.whole_pattern
+                            .captures_path_with(&path, &self.options)
+                            .expect("dir patterns consistent with whole pat");
+                        return Some(Ok(entry));
                     }
                 } else {
                     fill_todo(&mut self.todo, &self.dir_patterns,
@@ -543,6 +564,13 @@ impl Pattern {
     ///
     /// An invalid glob pattern will yield a `PatternError`.
     pub fn new(pattern: &str) -> Result<Pattern, PatternError> {
+        Pattern::new_options(pattern, false)
+    }
+    /// The `skip_groups` of `true` is needed to compile partial patterns in
+    /// glob directory scanner
+    fn new_options(pattern: &str, skip_groups: bool)
+        -> Result<Pattern, PatternError>
+    {
         use self::PatternToken::*;
 
         let chars = pattern.chars().collect::<Vec<_>>();
@@ -588,20 +616,21 @@ impl Pattern {
                             while i < chars.len() &&
                                 (chars[i] == '(' || chars[i] == ')')
                             {
-                                if chars[i] == '(' {
-                                    captures_stack.push((last_capture, i));
-                                    tokens.push(StartCapture(last_capture, true));
-                                    last_capture += 1;
-                                    i += 1;
-                                } else if chars[i] == ')' {
-                                    if let Some((c, _)) = captures_stack.pop()
-                                    {
-                                        tokens.push(EndCapture(c, true));
-                                    } else {
-                                        return Err(PatternError {
-                                            pos: i,
-                                            msg: "Unmatched closing paren",
-                                        });
+                                if !skip_groups {
+                                    if chars[i] == '(' {
+                                        captures_stack.push((last_capture, i));
+                                        tokens.push(StartCapture(last_capture, true));
+                                        last_capture += 1;
+                                    } else if chars[i] == ')' {
+                                        if let Some((c, _)) = captures_stack.pop()
+                                        {
+                                            tokens.push(EndCapture(c, true));
+                                        } else {
+                                            return Err(PatternError {
+                                                pos: i,
+                                                msg: "Unmatched closing paren",
+                                            });
+                                        }
                                     }
                                 }
                                 i += 1;
@@ -661,19 +690,23 @@ impl Pattern {
                     });
                 }
                 '(' => {
-                    captures_stack.push((last_capture, i));
-                    tokens.push(StartCapture(last_capture, false));
-                    last_capture += 1;
+                    if !skip_groups {
+                        captures_stack.push((last_capture, i));
+                        tokens.push(StartCapture(last_capture, false));
+                        last_capture += 1;
+                    }
                     i += 1;
                 }
                 ')' => {
-                    if let Some((c, _)) = captures_stack.pop() {
-                        tokens.push(EndCapture(c, false));
-                    } else {
-                        return Err(PatternError {
-                            pos: i,
-                            msg: "Unmatched closing paren",
-                        });
+                    if !skip_groups {
+                        if let Some((c, _)) = captures_stack.pop() {
+                            tokens.push(EndCapture(c, false));
+                        } else {
+                            return Err(PatternError {
+                                pos: i,
+                                msg: "Unmatched closing paren",
+                            });
+                        }
                     }
                     i += 1;
                 }
@@ -777,6 +810,21 @@ impl Pattern {
     /// ```
     pub fn captures(&self, str: &str) -> Option<Entry> {
         self.captures_with(str, &MatchOptions::new())
+    }
+
+    /// Return an entry if filename converted to str matches pattern
+    pub fn captures_path(&self, path: &Path)
+        -> Option<Entry>
+    {
+        self.captures_path_with(path, &MatchOptions::new())
+    }
+
+    /// Return an entry if filename converted to str matches pattern
+    pub fn captures_path_with(&self, path: &Path, options: &MatchOptions)
+        -> Option<Entry>
+    {
+        // FIXME (#9639): This needs to handle non-utf8 paths
+        path.to_str().map_or(None, |s| self.captures_with(s, options))
     }
 
     /// Return entry if filename matches pattern
@@ -1566,7 +1614,6 @@ mod test {
     #[test]
     fn test_capture_two_stars() {
         let pat = Pattern::new("some/(**)/needle.txt").unwrap();
-        println!("PAT {:?}", pat);
         assert_eq!(pat.captures("some/one/two/needle.txt").unwrap()
             .group(1).unwrap(), "one/two");
         assert_eq!(pat.captures("some/other/needle.txt").unwrap()
