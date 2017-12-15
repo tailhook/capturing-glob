@@ -496,8 +496,8 @@ enum PatternToken {
     AnyRecursiveSequence,
     AnyWithin(Vec<CharSpecifier>),
     AnyExcept(Vec<CharSpecifier>),
-    StartCapture(usize),
-    EndCapture(usize),
+    StartCapture(usize, bool),
+    EndCapture(usize, bool),
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -590,13 +590,13 @@ impl Pattern {
                             {
                                 if chars[i] == '(' {
                                     captures_stack.push((last_capture, i));
-                                    tokens.push(StartCapture(last_capture));
+                                    tokens.push(StartCapture(last_capture, true));
                                     last_capture += 1;
                                     i += 1;
                                 } else if chars[i] == ')' {
                                     if let Some((c, _)) = captures_stack.pop()
                                     {
-                                        tokens.push(EndCapture(c));
+                                        tokens.push(EndCapture(c, true));
                                     } else {
                                         return Err(PatternError {
                                             pos: i,
@@ -662,13 +662,13 @@ impl Pattern {
                 }
                 '(' => {
                     captures_stack.push((last_capture, i));
-                    tokens.push(StartCapture(last_capture));
+                    tokens.push(StartCapture(last_capture, false));
                     last_capture += 1;
                     i += 1;
                 }
                 ')' => {
                     if let Some((c, _)) = captures_stack.pop() {
-                        tokens.push(EndCapture(c));
+                        tokens.push(EndCapture(c, false));
                     } else {
                         return Err(PatternError {
                             pos: i,
@@ -786,7 +786,7 @@ impl Pattern {
         use self::CaptureResult::Match;
         let mut buf = Vec::new();
         let iter = str.chars();
-        match self.captures_from(true, iter, 0, str.len(), &mut buf, options) {
+        match self.captures_from(true, iter, 0, str, &mut buf, options) {
             Match(()) => {
                 Some(Entry::with_captures(str, buf))
             }
@@ -838,7 +838,7 @@ impl Pattern {
                         }
                     }
                 }
-                StartCapture(_) | EndCapture(_) => {}
+                StartCapture(..) | EndCapture(..) => {}
                 _ => {
                     let c = match file.next() {
                         Some(c) => c,
@@ -857,7 +857,7 @@ impl Pattern {
                         AnyExcept(ref specifiers) => !in_char_specifiers(&specifiers, c, options),
                         Char(c2) => chars_eq(c, c2, options.case_sensitive),
                         AnySequence | AnyRecursiveSequence => unreachable!(),
-                        StartCapture(_) | EndCapture(_) => unreachable!(),
+                        StartCapture(..) | EndCapture(..) => unreachable!(),
                     } {
                         return SubPatternDoesntMatch;
                     }
@@ -877,7 +877,7 @@ impl Pattern {
     fn captures_from(&self,
                     mut follows_separator: bool,
                     mut file: std::str::Chars,
-                    i: usize, fname_len: usize,
+                    i: usize, fname: &str,
                     captures: &mut Vec<(usize, usize)>,
                     options: &MatchOptions)
         -> CaptureResult
@@ -896,7 +896,7 @@ impl Pattern {
 
                     // Empty match
                     match self.captures_from(follows_separator, file.clone(),
-                        i + ti + 1, fname_len, captures, options)
+                        i + ti + 1, fname, captures, options)
                     {
                         SubPatternDoesntMatch => (), // keep trying
                         m => return m,
@@ -916,22 +916,32 @@ impl Pattern {
                         match self.captures_from(follows_separator,
                                                 file.clone(),
                                                 i + ti + 1,
-                                                fname_len, captures,
+                                                fname, captures,
                                                 options) {
                             SubPatternDoesntMatch => (), // keep trying
                             m => return m,
                         }
                     }
                 }
-                StartCapture(n) => {
-                    let off = fname_len - file.as_str().len();
+                StartCapture(n, flag) => {
+                    let mut off = fname.len() - file.as_str().len();
+                    if flag && fname[..off].ends_with('/') {
+                        off -= 1;
+                    }
                     while captures.len() < n+1 {
                         captures.push((0, 0));
                     }
                     captures[n] = (off, off);
                 }
-                EndCapture(n) => {
-                    let off = fname_len - file.as_str().len();
+                EndCapture(n, flag) => {
+                    let mut off = fname.len() - file.as_str().len();
+                    if flag && fname[..off].ends_with('/') {
+                        off -= 1;
+                    }
+                    if off < captures[n].0 {
+                        // if "a/**/b" matches "a/b"
+                        off = captures[n].0;
+                    }
                     captures[n].1 = off;
                 }
                 _ => {
@@ -952,7 +962,7 @@ impl Pattern {
                         AnyExcept(ref specifiers) => !in_char_specifiers(&specifiers, c, options),
                         Char(c2) => chars_eq(c, c2, options.case_sensitive),
                         AnySequence | AnyRecursiveSequence => unreachable!(),
-                        StartCapture(_) | EndCapture(_) => unreachable!(),
+                        StartCapture(..) | EndCapture(..) => unreachable!(),
                     } {
                         return SubPatternDoesntMatch;
                     }
@@ -1556,6 +1566,7 @@ mod test {
     #[test]
     fn test_capture_two_stars() {
         let pat = Pattern::new("some/(**)/needle.txt").unwrap();
+        println!("PAT {:?}", pat);
         assert_eq!(pat.captures("some/one/two/needle.txt").unwrap()
             .group(1).unwrap(), "one/two");
         assert_eq!(pat.captures("some/other/needle.txt").unwrap()
