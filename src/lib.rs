@@ -22,15 +22,19 @@
 //!
 //! # Examples
 //!
-//! To print all jpg files in `/media/` and all of its subdirectories.
+//! To print all jpg files in `/media/` and all of its subdirectories,
+//! extracting stem and a directory name while matching.
 //!
 //! ```rust,no_run
 //! use capturing_glob::glob;
 //!
-//! for entry in glob("/media/**/*.jpg").expect("Failed to read glob pattern") {
+//! for entry in glob("/media/(**/*).jpg").expect("Failed to read glob pattern") {
 //!     match entry {
-//!         Ok(entry) => println!("{:?}", entry.path().display()),
-//!         Err(e) => println!("{:?}", e),
+//!         Ok(entry) => {
+//!             println!("{:?} -> {:?}", entry.path().display(),
+//!                 entry.group(1).unwrap());
+//!         }
+//!         Err(e) => eprintln!("{:?}", e),
 //!     }
 //! }
 //! ```
@@ -95,9 +99,9 @@ pub struct Entries {
     scope: Option<PathBuf>,
 }
 
-/// Return an iterator that produces all the `Path`s that match the given
-/// pattern using default match options, which may be absolute or relative to
-/// the current working directory.
+/// Return an iterator that produces all the paths and capture groups that
+/// match the given pattern using default match options, which may be absolute
+/// or relative to the current working directory.
 ///
 /// This may return an error if the pattern is invalid.
 ///
@@ -122,9 +126,13 @@ pub struct Entries {
 /// ```rust,no_run
 /// use capturing_glob::glob;
 ///
-/// for entry in glob("/media/pictures/*.jpg").unwrap() {
+/// for entry in glob("/media/pictures/(*).jpg").unwrap() {
 ///     match entry {
-///         Ok(entry) => println!("{:?}", entry.path().display()),
+///         Ok(entry) => {
+///             println!("{:?} -> {:?}",
+///                 entry.path().display(),
+///                 entry.group(1).unwrap());
+///         }
 ///
 ///         // if the path matched but was unreadable,
 ///         // thereby preventing its contents from matching
@@ -136,8 +144,8 @@ pub struct Entries {
 /// The above code will print:
 ///
 /// ```ignore
-/// /media/pictures/kittens.jpg
-/// /media/pictures/puppies.jpg
+/// /media/pictures/kittens.jpg -> kittens
+/// /media/pictures/puppies.jpg -> puppies
 /// ```
 ///
 /// If you want to ignore unreadable paths, you can use something like
@@ -156,9 +164,9 @@ pub fn glob(pattern: &str) -> Result<Entries, PatternError> {
     glob_with(pattern, &MatchOptions::new())
 }
 
-/// Return an iterator that produces all the `Path`s that match the given
-/// pattern using the specified match options, which may be absolute or relative
-/// to the current working directory.
+/// Return an iterator that produces all the paths with capture groups that
+/// match the given pattern using the specified match options, which may be
+/// absolute or relative to the current working directory.
 ///
 /// This may return an error if the pattern is invalid.
 ///
