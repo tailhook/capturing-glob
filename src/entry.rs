@@ -16,6 +16,15 @@ impl Entry {
             groups: Vec::new(),
         }
     }
+    pub(crate) fn with_captures<P>(path: P, capt: Vec<(usize, usize)>)
+        -> Entry
+        where P: Into<PathBuf>,
+    {
+        Entry {
+            path: path.into(),
+            groups: capt,
+        }
+    }
     /// Get path represented by this entry
     pub fn path(&self) -> &Path {
         &self.path

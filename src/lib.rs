@@ -525,6 +525,19 @@ const ERROR_RECURSIVE_WILDCARDS: &'static str = "recursive wildcards must form a
                                                  component";
 const ERROR_INVALID_RANGE: &'static str = "invalid range pattern";
 
+fn ends_with_sep(s: &[char]) -> bool {
+    for &c in s.iter().rev() {
+        if c == '(' || c == ')' {
+            continue;
+        } else if path::is_separator(c) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
 impl Pattern {
     /// This function compiles Unix shell style patterns.
     ///
@@ -536,6 +549,8 @@ impl Pattern {
         let mut tokens = Vec::new();
         let mut is_recursive = false;
         let mut i = 0;
+        let mut last_capture = 0;
+        let mut captures_stack = Vec::new();
 
         while i < chars.len() {
             match chars[i] {
@@ -558,18 +573,44 @@ impl Pattern {
                             msg: ERROR_WILDCARDS,
                         });
                     } else if count == 2 {
+                        // collapse consecutive AnyRecursiveSequence to a
+                        // single one
+                        let tokens_len = tokens.len();
+                        if !(tokens_len > 1 && tokens[tokens_len - 1] == AnyRecursiveSequence) {
+                            is_recursive = true;
+                            tokens.push(AnyRecursiveSequence);
+                        }
                         // ** can only be an entire path component
                         // i.e. a/**/b is valid, but a**/b or a/**b is not
                         // invalid matches are treated literally
-                        let is_valid = if i == 2 || path::is_separator(chars[i - count - 1]) {
-                            // it ends in a '/'
+                        if ends_with_sep(&chars[..i - count]) {
+                            // it ends in a '/' sans parenthesis
+                            while i < chars.len() &&
+                                (chars[i] == '(' || chars[i] == ')')
+                            {
+                                if chars[i] == '(' {
+                                    captures_stack.push((last_capture, i));
+                                    tokens.push(StartCapture(last_capture));
+                                    last_capture += 1;
+                                    i += 1;
+                                } else if chars[i] == ')' {
+                                    if let Some((c, _)) = captures_stack.pop()
+                                    {
+                                        tokens.push(EndCapture(c));
+                                    } else {
+                                        return Err(PatternError {
+                                            pos: i,
+                                            msg: "Unmatched closing paren",
+                                        });
+                                    }
+                                }
+                                i += 1;
+                            }
                             if i < chars.len() && path::is_separator(chars[i]) {
                                 i += 1;
-                                true
                                 // or the pattern ends here
                                 // this enables the existing globbing mechanism
                             } else if i == chars.len() {
-                                true
                                 // `**` ends in non-separator
                             } else {
                                 return Err(PatternError {
@@ -583,17 +624,6 @@ impl Pattern {
                                 pos: old - 1,
                                 msg: ERROR_RECURSIVE_WILDCARDS,
                             });
-                        };
-
-                        let tokens_len = tokens.len();
-
-                        if is_valid {
-                            // collapse consecutive AnyRecursiveSequence to a
-                            // single one
-                            if !(tokens_len > 1 && tokens[tokens_len - 1] == AnyRecursiveSequence) {
-                                is_recursive = true;
-                                tokens.push(AnyRecursiveSequence);
-                            }
                         }
                     } else {
                         tokens.push(AnySequence);
@@ -630,11 +660,35 @@ impl Pattern {
                         msg: ERROR_INVALID_RANGE,
                     });
                 }
+                '(' => {
+                    captures_stack.push((last_capture, i));
+                    tokens.push(StartCapture(last_capture));
+                    last_capture += 1;
+                    i += 1;
+                }
+                ')' => {
+                    if let Some((c, _)) = captures_stack.pop() {
+                        tokens.push(EndCapture(c));
+                    } else {
+                        return Err(PatternError {
+                            pos: i,
+                            msg: "Unmatched closing paren",
+                        });
+                    }
+                    i += 1;
+                }
                 c => {
                     tokens.push(Char(c));
                     i += 1;
                 }
             }
+        }
+
+        for (_, i) in captures_stack {
+            return Err(PatternError {
+                pos: i,
+                msg: "Unmatched opening paren",
+            })
         }
 
         Ok(Pattern {
@@ -708,12 +762,34 @@ impl Pattern {
     }
 
     /// Return entry if filename matches pattern
+    ///
+    /// Then you can extract capture groups from entry
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use capturing_glob::Pattern;
+    ///
+    /// assert_eq!(Pattern::new("(*).txt").unwrap()
+    ///     .captures("some.txt").unwrap()
+    ///     .group(1).unwrap(),
+    ///     "some");
+    /// ```
+    pub fn captures(&self, str: &str) -> Option<Entry> {
+        self.captures_with(str, &MatchOptions::new())
+    }
+
+    /// Return entry if filename matches pattern
     pub fn captures_with(&self, str: &str, options: &MatchOptions)
         -> Option<Entry>
     {
         use self::CaptureResult::Match;
-        match self.captures_from(true, str.char_indices(), 0, options) {
-            Match(capt) => unimplemented!(),
+        let mut buf = Vec::new();
+        let iter = str.chars();
+        match self.captures_from(true, iter, 0, str.len(), &mut buf, options) {
+            Match(()) => {
+                Some(Entry::with_captures(str, buf))
+            }
             _ => None,
         }
     }
@@ -762,6 +838,7 @@ impl Pattern {
                         }
                     }
                 }
+                StartCapture(_) | EndCapture(_) => {}
                 _ => {
                     let c = match file.next() {
                         Some(c) => c,
@@ -780,7 +857,7 @@ impl Pattern {
                         AnyExcept(ref specifiers) => !in_char_specifiers(&specifiers, c, options),
                         Char(c2) => chars_eq(c, c2, options.case_sensitive),
                         AnySequence | AnyRecursiveSequence => unreachable!(),
-                        StartCapture(_) | EndCapture(_) => true,
+                        StartCapture(_) | EndCapture(_) => unreachable!(),
                     } {
                         return SubPatternDoesntMatch;
                     }
@@ -799,10 +876,11 @@ impl Pattern {
 
     fn captures_from(&self,
                     mut follows_separator: bool,
-                    mut file: std::str::CharIndices,
-                    i: usize,
+                    mut file: std::str::Chars,
+                    i: usize, fname_len: usize,
+                    captures: &mut Vec<(usize, usize)>,
                     options: &MatchOptions)
-                    -> CaptureResult
+        -> CaptureResult
     {
         use self::PatternToken::*;
         use self::CaptureResult::*;
@@ -817,12 +895,14 @@ impl Pattern {
                     });
 
                     // Empty match
-                    match self.captures_from(follows_separator, file.clone(), i + ti + 1, options) {
+                    match self.captures_from(follows_separator, file.clone(),
+                        i + ti + 1, fname_len, captures, options)
+                    {
                         SubPatternDoesntMatch => (), // keep trying
                         m => return m,
                     };
 
-                    while let Some((i, c)) = file.next() {
+                    while let Some(c) = file.next() {
                         if follows_separator && options.require_literal_leading_dot && c == '.' {
                             return SubPatternDoesntMatch;
                         }
@@ -836,14 +916,26 @@ impl Pattern {
                         match self.captures_from(follows_separator,
                                                 file.clone(),
                                                 i + ti + 1,
+                                                fname_len, captures,
                                                 options) {
                             SubPatternDoesntMatch => (), // keep trying
                             m => return m,
                         }
                     }
                 }
+                StartCapture(n) => {
+                    let off = fname_len - file.as_str().len();
+                    while captures.len() < n+1 {
+                        captures.push((0, 0));
+                    }
+                    captures[n] = (off, off);
+                }
+                EndCapture(n) => {
+                    let off = fname_len - file.as_str().len();
+                    captures[n].1 = off;
+                }
                 _ => {
-                    let (i, c) = match file.next() {
+                    let c = match file.next() {
                         Some(pair) => pair,
                         None => return EntirePatternDoesntMatch,
                     };
@@ -860,8 +952,7 @@ impl Pattern {
                         AnyExcept(ref specifiers) => !in_char_specifiers(&specifiers, c, options),
                         Char(c2) => chars_eq(c, c2, options.case_sensitive),
                         AnySequence | AnyRecursiveSequence => unreachable!(),
-                        StartCapture(_) => unimplemented!(),
-                        EndCapture(_) => unimplemented!(),
+                        StartCapture(_) | EndCapture(_) => unreachable!(),
                     } {
                         return SubPatternDoesntMatch;
                     }
@@ -1188,6 +1279,7 @@ mod test {
                     .unwrap()
                     .matches("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         assert!(Pattern::new("a*b[xyz]c*d").unwrap().matches("abxcdbxcddd"));
+        assert!(Pattern::new("some/only-(*).txt").unwrap().matches("some/only-file1.txt"));
     }
 
     #[test]
@@ -1459,5 +1551,126 @@ mod test {
     fn test_path_join() {
         let pattern = Path::new("one").join(&Path::new("**/*.rs"));
         assert!(Pattern::new(pattern.to_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn test_capture_two_stars() {
+        let pat = Pattern::new("some/(**)/needle.txt").unwrap();
+        assert_eq!(pat.captures("some/one/two/needle.txt").unwrap()
+            .group(1).unwrap(), "one/two");
+        assert_eq!(pat.captures("some/other/needle.txt").unwrap()
+            .group(1).unwrap(), "other");
+        assert!(pat.captures("some/other/not_this.txt").is_none());
+        assert_eq!(pat.captures("some/needle.txt").unwrap().group(1).unwrap(), "");
+        assert_eq!(pat.captures("some/one/needle.txt").unwrap()
+            .group(1).unwrap(), "one");
+    }
+
+    #[test]
+    fn test_capture_star() {
+        let opt = MatchOptions {
+            require_literal_separator: true,
+            .. MatchOptions::new()
+        };
+        let pat = Pattern::new("some/(*)/needle.txt").unwrap();
+        assert!(pat.captures("some/needle.txt").is_none());
+        assert_eq!(pat.captures("some/one/needle.txt").unwrap()
+            .group(1).unwrap(), "one");
+        assert!(pat.captures_with("some/one/two/needle.txt", &opt).is_none());
+        assert_eq!(pat.captures("some/other/needle.txt").unwrap()
+            .group(1).unwrap(), "other");
+        assert!(pat.captures("some/other/not_this.txt").is_none());
+    }
+
+    #[test]
+    fn test_capture_name_start() {
+        let opt = MatchOptions {
+            require_literal_separator: true,
+            .. MatchOptions::new()
+        };
+        let pat = Pattern::new("some/only-(*).txt").unwrap();
+        assert!(pat.captures("some/needle.txt").is_none());
+        assert!(pat.captures("some/one/only-x.txt").is_none());
+        assert_eq!(pat.captures("some/only-file1.txt").unwrap()
+            .group(1).unwrap(), "file1");
+        assert_eq!(pat.captures("some/only-file2.txt").unwrap()
+            .group(1).unwrap(), "file2");
+        assert!(pat.captures_with("some/only-dir1/some.txt", &opt).is_none());
+    }
+
+    #[test]
+    fn test_capture_end() {
+        let pat = Pattern::new("some/only-(*)").unwrap();
+        assert!(pat.captures("some/needle.txt").is_none());
+        assert_eq!(pat.captures("some/only-file1.txt").unwrap()
+            .group(1).unwrap(), "file1.txt");
+        assert_eq!(pat.captures("some/only-").unwrap()
+            .group(1).unwrap(), "");
+    }
+
+    #[test]
+    fn test_capture_char() {
+        let pat = Pattern::new("some/file(?).txt").unwrap();
+        assert_eq!(pat.captures("some/file1.txt").unwrap()
+            .group(1).unwrap(), "1");
+        assert_eq!(pat.captures("some/file2.txt").unwrap()
+            .group(1).unwrap(), "2");
+        assert!(pat.captures("some/file12.txt").is_none());
+        assert!(pat.captures("some/file.txt").is_none());
+    }
+
+    #[test]
+    fn test_paren_two_stars() {
+        let pat = Pattern::new("some/(**)/needle.txt").unwrap();
+        assert!(pat.matches("some/one/needle.txt"));
+        assert!(pat.matches("some/one/two/needle.txt"));
+        assert!(pat.matches("some/other/needle.txt"));
+        assert!(!pat.matches("some/other/not_this.txt"));
+        assert!(pat.matches("some/needle.txt"));
+    }
+
+    #[test]
+    fn test_paren_star() {
+        let opt = MatchOptions {
+            require_literal_separator: true,
+            .. MatchOptions::new()
+        };
+        let pat = Pattern::new("some/(*)/needle.txt").unwrap();
+        assert!(!pat.matches("some/needle.txt"));
+        assert!(pat.matches("some/one/needle.txt"));
+        assert!(!pat.matches_with("some/one/two/needle.txt", &opt));
+        assert!(pat.matches("some/other/needle.txt"));
+        assert!(!pat.matches("some/other/not_this.txt"));
+    }
+
+    #[test]
+    fn test_paren_name_start() {
+        let opt = MatchOptions {
+            require_literal_separator: true,
+            .. MatchOptions::new()
+        };
+        let pat = Pattern::new("some/only-(*).txt").unwrap();
+        assert!(!pat.matches("some/needle.txt"));
+        assert!(!pat.matches("some/one/only-x.txt"));
+        assert!(pat.matches("some/only-file1.txt"));
+        assert!(pat.matches("some/only-file2.txt"));
+        assert!(!pat.matches_with("some/only-dir1/some.txt", &opt));
+    }
+
+    #[test]
+    fn test_paren_end() {
+        let pat = Pattern::new("some/only-(*)").unwrap();
+        assert!(!pat.matches("some/needle.txt"));
+        assert!(pat.matches("some/only-file1.txt"));
+        assert!(pat.matches("some/only-"));
+    }
+
+    #[test]
+    fn test_paren_char() {
+        let pat = Pattern::new("some/file(?).txt").unwrap();
+        assert!(pat.matches("some/file1.txt"));
+        assert!(pat.matches("some/file2.txt"));
+        assert!(!pat.matches("some/file12.txt"));
+        assert!(!pat.matches("some/file.txt"));
     }
 }
