@@ -58,6 +58,41 @@
 //!     }
 //! }
 //! ```
+//!
+//! # Substitute Names
+//!
+//! Reverse conversion where you have a name and pattern and want to get
+//! a full path is also possible:
+//!
+//! ```rust
+//! # use std::error::Error;
+//! use capturing_glob::Pattern;
+//!
+//! # fn run() -> Result<(), Box<Error>> {
+//! assert_eq!(Pattern::new("images/(*).jpg")?.substitute(&["cat"])?,
+//!            "images/cat.jpg");
+//! assert_eq!(Pattern::new("images/(*.jpg)")?.substitute(&["cat.jpg"])?,
+//!            "images/cat.jpg");
+//! # Ok(())
+//! # }
+//! # fn main() { run().unwrap() }
+//! ```
+//!
+//! Note: we don't check substituted pattern. So the following is possible:
+//!
+//! ```rust
+//! # use std::error::Error;
+//! use capturing_glob::Pattern;
+//!
+//! # fn run() -> Result<(), Box<Error>> {
+//! let pattern = Pattern::new("images/(*.jpg)")?;
+//! assert_eq!(pattern.substitute(&["cat.png"])?, "images/cat.png");
+//! assert!(!pattern.matches(&pattern.substitute(&["cat.png"])?));
+//! # Ok(())
+//! # }
+//! # fn main() { run().unwrap() }
+//! ```
+//!
 
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
@@ -467,6 +502,36 @@ impl fmt::Display for PatternError {
                "Pattern syntax error near position {}: {}",
                self.pos,
                self.msg)
+    }
+}
+
+/// A pattern substitution error
+#[derive(Debug)]
+#[allow(missing_copy_implementations)]
+pub enum SubstitutionError {
+    /// No value supplied for capture group
+    MissingGroup(usize),
+    /// Wildcard char `*?[..]` is outside of the capture group
+    UnexpectedWildcard,
+}
+
+impl Error for SubstitutionError {
+    fn description(&self) -> &str {
+        "substitution error"
+    }
+}
+
+impl fmt::Display for SubstitutionError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::SubstitutionError::*;
+        match *self {
+            MissingGroup(g) => {
+                write!(f, "substitution error: missing group {}", g)
+            }
+            UnexpectedWildcard => {
+                write!(f, "unexpected wildcard")
+            }
+        }
     }
 }
 
@@ -1033,6 +1098,54 @@ impl Pattern {
         } else {
             SubPatternDoesntMatch
         }
+    }
+    /// Substitute values back into patterns replacing capture groups
+    ///
+    /// ```rust
+    /// # use std::error::Error;
+    /// use capturing_glob::Pattern;
+    ///
+    /// # fn run() -> Result<(), Box<Error>> {
+    /// assert_eq!(Pattern::new("images/(*).jpg")?.substitute(&["cat"])?,
+    ///            "images/cat.jpg");
+    /// # Ok(())
+    /// # }
+    /// # fn main() { run().unwrap() }
+    /// ```
+    ///
+    /// Note: we check neither result so it matches pattern.
+    pub fn substitute(&self, capture_groups: &[&str])
+        -> Result<String, SubstitutionError>
+    {
+        use self::PatternToken::*;
+
+        let mut result = String::with_capacity(self.original.len());
+        let mut iter = self.tokens.iter();
+        while let Some(tok) = iter.next() {
+            match *tok {
+                Char(c) => result.push(c),
+                AnyChar | AnySequence | AnyRecursiveSequence |
+                AnyWithin(..) | AnyExcept(..)
+                => {
+                    return Err(SubstitutionError::UnexpectedWildcard);
+                }
+                StartCapture(idx, _) => {
+                    if let Some(val) = capture_groups.get(idx) {
+                        result.push_str(val);
+                    } else {
+                        return Err(SubstitutionError::MissingGroup(idx));
+                    }
+                    for tok in iter.by_ref() {
+                        match *tok {
+                            EndCapture(i, _) if idx == i => break,
+                            _ => {}
+                        }
+                    }
+                }
+                EndCapture(_, _) => unreachable!(),
+            }
+        }
+        return Ok(result)
     }
 }
 
